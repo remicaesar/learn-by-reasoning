@@ -1,0 +1,8 @@
+{
+  "name": "learn-by-reasoning",
+  "version": "0.1.0",
+  "description": "Turn a book or lecture notes into a chapter-by-chapter course that teaches by making you reason: a problem first, then the explanation, then you teach it back.",
+  "author": { "name": "emirmuratsezer" },
+  "license": "MIT",
+  "keywords": ["learning", "reading", "teaching", "study"]
+}

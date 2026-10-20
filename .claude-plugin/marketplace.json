@@ -1,0 +1,14 @@
+{
+  "name": "learn-by-reasoning",
+  "owner": { "name": "emirmuratsezer" },
+  "metadata": {
+    "description": "Learn by Reasoning: learn a book by working problems and teaching it back."
+  },
+  "plugins": [
+    {
+      "name": "learn-by-reasoning",
+      "source": "./",
+      "description": "Turn a PDF into a chapter-by-chapter course taught problem-first, with a terminal progress map."
+    }
+  ]
+}
