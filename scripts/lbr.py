@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
 """Plan, progress and book discovery for learn-by-reasoning.
 
-Owns everything about a book folder that must be exact: parsing plan.md and
-drawing the progress map. Skills call this script instead of editing state
+Owns everything about a book folder that must be exact: parsing and rewriting
+plan.md, drawing the progress map, and finding books. Skills call this script instead of editing state
 markers by hand, so the map cannot drift from the saved state.
 """
 
 import argparse
 from dataclasses import dataclass, field
+import os
 from pathlib import Path
 import re
 import sys
+import unicodedata
 
 MARKER = "<!-- learn-by-reasoning v1 -->"
 
 STATE_BY_MARK = {" ": "todo", ">": "current", "!": "shaky", "x": "done"}
+MARK_BY_STATE = {state: mark for mark, state in STATE_BY_MARK.items()}
 READ_VALUES = ("yes", "no", "unasked")
 
 BAR_CELLS = 20
@@ -22,6 +25,14 @@ YOU_ARE_HERE = "← you are here"
 UP_NEXT = "← up next"
 SHAKY_NOTE = "shaky: re-quiz next time"
 MAX_QUIZ = 3
+DEFAULT_ROOT = "~/learning"
+SLUG_MAX = 60
+
+# Letters NFKD does not split into a base letter plus accents.
+TRANSLITERATE = str.maketrans(
+    {"ı": "i", "İ": "i", "ß": "ss", "æ": "ae", "Æ": "ae", "œ": "oe", "Œ": "oe",
+     "ø": "o", "Ø": "o", "ł": "l", "Ł": "l", "đ": "d", "Đ": "d", "þ": "th", "Þ": "th"}
+)
 
 CHAPTER_RE = re.compile(r"^## (\d+)\. (\S.*)$")
 FIELD_RE = re.compile(r"^(pages|read): ?(.*)$")
@@ -163,6 +174,92 @@ def parse_plan(path):
     return book
 
 
+def write_lines(path, lines):
+    """Replace path's contents via a temp file, so a crash never leaves half a file."""
+    target = Path(path).resolve()
+    tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="") as f:
+            f.write("".join(lines))
+        os.replace(tmp, target)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+
+def replace_line(lines, number, text):
+    """Swap line `number` (1-based) for text, keeping its original line ending."""
+    old = lines[number - 1]
+    ending = old[len(old.rstrip("\r\n")):]
+    lines[number - 1] = text + ending
+
+
+def set_mark(lines, concept, state):
+    line = lines[concept.line - 1].rstrip("\r\n")
+    replace_line(lines, concept.line, line[:3] + MARK_BY_STATE[state] + line[4:])
+
+
+def set_state(path, concept_id, state):
+    """Set one concept's state; a new "current" demotes the old one to not started."""
+    if state not in MARK_BY_STATE:
+        raise ValueError(f"unknown state {state!r}; use one of {', '.join(MARK_BY_STATE)}")
+    path = Path(path)
+    book = parse_plan(path)
+    concepts = all_concepts(book)
+    target = next((c for c in concepts if c.id == concept_id), None)
+    if target is None:
+        raise PlanError(path, 0, f"no concept with id {concept_id}")
+    lines = read_lines(path)
+    if state == "current":
+        for c in concepts:
+            if c.state == "current" and c is not target:
+                set_mark(lines, c, "todo")
+    set_mark(lines, target, state)
+    write_lines(path, lines)
+
+
+def set_read(path, chapter_number, value):
+    """Record whether the learner has read a chapter."""
+    if value not in ("yes", "no"):
+        raise ValueError(f"read must be yes or no, not {value!r}")
+    path = Path(path)
+    book = parse_plan(path)
+    chapter = next((ch for ch in book.chapters if ch.number == chapter_number), None)
+    if chapter is None:
+        raise PlanError(path, 0, f"no chapter {chapter_number}")
+    lines = read_lines(path)
+    replace_line(lines, chapter.read_line, f"read: {value}")
+    write_lines(path, lines)
+
+
+def slugify(title):
+    """A folder name for a title: lowercase ASCII words joined by hyphens."""
+    text = unicodedata.normalize("NFKD", title.translate(TRANSLITERATE))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch)).lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", text).strip("-")
+    if len(slug) > SLUG_MAX:
+        slug = slug[:SLUG_MAX].rsplit("-", 1)[0]
+    return slug or "book"
+
+
+def is_book_dir(folder):
+    plan = folder / "plan.md"
+    try:
+        with open(plan, encoding="utf-8") as f:
+            return f.readline().rstrip() == MARKER
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def find_books(root):
+    """Immediate subfolders of root whose plan.md carries the v1 marker."""
+    root = Path(root).expanduser()
+    if not root.is_dir():
+        return []
+    folders = sorted(p for p in root.iterdir() if p.is_dir() and is_book_dir(p))
+    return [(folder, parse_plan(folder / "plan.md")) for folder in folders]
+
+
 def all_concepts(book):
     return [c for ch in book.chapters for c in ch.concepts]
 
@@ -283,6 +380,44 @@ def cmd_progress(args):
     print(render_map(parse_plan(plan_path(args.book_dir))))
 
 
+def cmd_set(args):
+    set_state(plan_path(args.book_dir), args.concept_id, args.state)
+
+
+def cmd_read(args):
+    set_read(plan_path(args.book_dir), args.chapter, args.value)
+
+
+def cmd_books(args):
+    books = find_books(args.root)
+    if not books:
+        print(f"No books under {Path(args.root).expanduser()}.")
+    for folder, book in books:
+        concepts = all_concepts(book)
+        done = sum(c.state == "done" for c in concepts)
+        print(f"{folder}\t{book.title}\t{done} of {len(concepts)} concepts done")
+
+
+def cmd_slug(args):
+    print(slugify(args.title))
+
+
+def cmd_status(args):
+    book = parse_plan(plan_path(args.book_dir))
+    concepts = all_concepts(book)
+    nxt = next_concept(book)
+
+    def ids(state):
+        return ",".join(c.id for c in concepts if c.state == state) or "-"
+
+    chapter = chapter_of(book, nxt) if nxt else None
+    print(f"next: {nxt.id} {nxt.title}" if nxt else "next: -")
+    print(f"quiz: {quiz_size(book)}")
+    print(f"shaky: {ids('shaky')}")
+    print(f"done: {ids('done')}")
+    print(f"read: {chapter.number} {chapter.read}" if chapter else "read: -")
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="lbr.py", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -290,6 +425,30 @@ def build_parser():
     p = sub.add_parser("progress", help="print the progress map of a book")
     p.add_argument("book_dir")
     p.set_defaults(func=cmd_progress)
+
+    p = sub.add_parser("set", help="set a concept's state")
+    p.add_argument("book_dir")
+    p.add_argument("concept_id")
+    p.add_argument("state", choices=list(MARK_BY_STATE))
+    p.set_defaults(func=cmd_set)
+
+    p = sub.add_parser("read", help="record whether a chapter has been read")
+    p.add_argument("book_dir")
+    p.add_argument("chapter")
+    p.add_argument("value", choices=["yes", "no"])
+    p.set_defaults(func=cmd_read)
+
+    p = sub.add_parser("books", help="list the books under a folder")
+    p.add_argument("--root", default=DEFAULT_ROOT)
+    p.set_defaults(func=cmd_books)
+
+    p = sub.add_parser("slug", help="print the folder name for a title")
+    p.add_argument("title")
+    p.set_defaults(func=cmd_slug)
+
+    p = sub.add_parser("status", help="print where a book stands, one fact per line")
+    p.add_argument("book_dir")
+    p.set_defaults(func=cmd_status)
     return parser
 
 

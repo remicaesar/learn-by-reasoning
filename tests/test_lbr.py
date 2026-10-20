@@ -238,5 +238,171 @@ class CliTest(unittest.TestCase):
         self.assertEqual(result.stdout, lbr.render_map(lbr.parse_plan(FIXTURE)) + "\n")
 
 
+class SetStateTest(unittest.TestCase):
+    def setUp(self):
+        self.d = PlanDir(FIXTURE.read_text(encoding="utf-8")).__enter__()
+        self.addCleanup(self.d.__exit__)
+        self.before = self.d.plan.read_bytes()
+
+    def changed_lines(self):
+        old = self.before.decode("utf-8").splitlines(keepends=True)
+        new = self.d.plan.read_bytes().decode("utf-8").splitlines(keepends=True)
+        self.assertEqual(len(old), len(new))
+        return [(i + 1, a, b) for i, (a, b) in enumerate(zip(old, new)) if a != b]
+
+    def state_of(self, cid):
+        book = lbr.parse_plan(self.d.plan)
+        return next(c.state for c in lbr.all_concepts(book) if c.id == cid)
+
+    def test_set_state_rewrites_one_line(self):
+        lbr.set_state(self.d.plan, "2.6", "done")
+        self.assertEqual(
+            self.changed_lines(),
+            [(20, "- [ ] 2.6 One deviation principle\n", "- [x] 2.6 One deviation principle\n")],
+        )
+
+    def test_set_state_keeps_crlf(self):
+        self.d.plan.write_bytes(self.before.replace(b"\n", b"\r\n"))
+        self.before = self.d.plan.read_bytes()
+        lbr.set_state(self.d.plan, "1.2", "shaky")
+        self.assertEqual(
+            self.d.plan.read_bytes(),
+            self.before.replace(b"- [ ] 1.2 Strategy", b"- [!] 1.2 Strategy"),
+        )
+
+    def test_set_current_demotes_previous(self):
+        lbr.set_state(self.d.plan, "3.1", "current")
+        self.assertEqual(self.state_of("3.1"), "current")
+        self.assertEqual(self.state_of("2.5"), "todo")
+        self.assertEqual([n for n, _, _ in self.changed_lines()], [19, 25])
+        lbr.set_state(self.d.plan, "3.1", "current")
+        self.assertEqual(self.state_of("3.1"), "current")
+
+    def test_set_current_leaves_done_and_shaky(self):
+        lbr.set_state(self.d.plan, "2.5", "done")
+        lbr.set_state(self.d.plan, "2.6", "current")
+        self.assertEqual(self.state_of("2.5"), "done")
+        self.assertEqual(self.state_of("2.4"), "shaky")
+        self.assertEqual(self.state_of("2.1"), "done")
+
+    def test_set_unknown_id_refused(self):
+        with self.assertRaises(lbr.PlanError) as ctx:
+            lbr.set_state(self.d.plan, "9.9", "done")
+        self.assertIn("9.9", str(ctx.exception))
+        result = run_cli("set", self.d.dir, "9.9", "done")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("no concept with id 9.9", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        result = run_cli("set", self.d.dir, "2.6", "finished")
+        self.assertEqual(result.returncode, 2)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(self.d.plan.read_bytes(), self.before)
+
+    def test_set_keeps_file_on_error(self):
+        broken = self.before.replace(b"- [ ] 1.2", b"- [>] 1.2")
+        self.d.plan.write_bytes(broken)
+        with self.assertRaises(lbr.PlanError):
+            lbr.set_state(self.d.plan, "2.6", "done")
+        self.assertEqual(self.d.plan.read_bytes(), broken)
+        result = run_cli("set", self.d.dir, "2.6", "done")
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(self.d.plan.read_bytes(), broken)
+        with self.assertRaises(ValueError):
+            lbr.set_state(self.d.plan, "2.6", "finished")
+        self.assertEqual(self.d.plan.read_bytes(), broken)
+        self.assertEqual(sorted(p.name for p in self.d.dir.iterdir()), ["plan.md"])
+
+    def test_set_read(self):
+        lbr.set_read(self.d.plan, "1", "yes")
+        self.assertEqual(self.changed_lines(), [(8, "read: unasked\n", "read: yes\n")])
+        self.assertEqual(lbr.parse_plan(self.d.plan).chapters[0].read, "yes")
+        result = run_cli("read", self.d.dir, "10", "no")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(lbr.parse_plan(self.d.plan).chapters[9].read, "no")
+        for bad in (("11", "yes"), ("1", "unasked")):
+            result = run_cli("read", self.d.dir, *bad)
+            self.assertEqual(result.returncode, 2)
+            self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(lbr.parse_plan(self.d.plan).chapters[0].read, "yes")
+
+
+class SlugTest(unittest.TestCase):
+    def test_slugify_turkish(self):
+        self.assertEqual(lbr.slugify("Oyun Kuramı: Giriş"), "oyun-kurami-giris")
+        self.assertEqual(lbr.slugify("Çağdaş Öğütler, Üç İşçi"), "cagdas-ogutler-uc-isci")
+        self.assertEqual(lbr.slugify("Économie & Société"), "economie-societe")
+        self.assertEqual(lbr.slugify("Undergraduate Game Theory"), "undergraduate-game-theory")
+        self.assertEqual(lbr.slugify("!!!"), "book")
+        result = run_cli("slug", "Oyun Kuramı: Giriş")
+        self.assertEqual(result.stdout, "oyun-kurami-giris\n")
+
+    def test_turkish_title_renders(self):
+        book = book_from([("Bölüm Şu", [(">", "Çağrı öğesi")])], title="Oyun Kuramı: Giriş")
+        out = lbr.render_map(book)
+        self.assertIn("Oyun Kuramı", out)
+        self.assertIn("Çağrı öğesi", out)
+        with PlanDir(plan_text([("Bölüm", [(" ", "Öğe")])], title="Oyun Kuramı")) as d:
+            result = run_cli("progress", d.dir)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Oyun Kuramı", result.stdout)
+
+
+class FindBooksTest(unittest.TestCase):
+    def test_find_books_ignores_unmarked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "marked").mkdir()
+            (root / "marked" / "plan.md").write_text(plan_text([("One", [("x", "a"), (" ", "b")])]), encoding="utf-8")
+            (root / "unmarked").mkdir()
+            (root / "unmarked" / "plan.md").write_text("# Some other plan\n- [ ] 1.1 a\n", encoding="utf-8")
+            (root / "empty").mkdir()
+            (root / "loose.md").write_text(lbr.MARKER + "\n", encoding="utf-8")
+            books = lbr.find_books(root)
+            self.assertEqual([p.name for p, _ in books], ["marked"])
+            self.assertEqual(books[0][1].title, "A Book")
+            result = run_cli("books", "--root", root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                result.stdout, f"{root / 'marked'}\tA Book\t1 of 2 concepts done\n"
+            )
+
+    def test_find_books_missing_root(self):
+        missing = Path(tempfile.gettempdir()) / "lbr-no-such-root"
+        self.assertEqual(lbr.find_books(missing), [])
+        result = run_cli("books", "--root", missing)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("No books", result.stdout)
+
+
+class StatusTest(unittest.TestCase):
+    def test_status_lines(self):
+        result = run_cli("status", FIXTURE.parent)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.splitlines(),
+            [
+                "next: 2.5 Backward induction",
+                "quiz: 3",
+                "shaky: 2.4",
+                "done: 1.1,2.1,2.2,2.3",
+                "read: 2 yes",
+            ],
+        )
+
+    def test_status_without_current_or_reviews(self):
+        with PlanDir(plan_text([("One", [(" ", "a")]), ("Two", [(" ", "b")])])) as d:
+            self.assertEqual(
+                run_cli("status", d.dir).stdout.splitlines(),
+                ["next: 1.1 a", "quiz: 0", "shaky: -", "done: -", "read: 1 unasked"],
+            )
+
+    def test_status_complete(self):
+        with PlanDir(plan_text([("One", [("x", "a"), ("!", "b")])])) as d:
+            self.assertEqual(
+                run_cli("status", d.dir).stdout.splitlines(),
+                ["next: -", "quiz: 2", "shaky: 1.2", "done: 1.1", "read: -"],
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
