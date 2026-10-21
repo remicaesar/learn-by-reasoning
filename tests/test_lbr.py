@@ -82,21 +82,27 @@ class MapTest(unittest.TestCase):
         self.lines = lbr.render_map(self.book).splitlines()
 
     def test_map_header(self):
-        first = self.lines[0]
         total = sum(len(ch.concepts) for ch in self.book.chapters)
         done = sum(c.state == "done" for ch in self.book.chapters for c in ch.concepts)
-        self.assertIn("Undergraduate", first)
-        self.assertIn("0 of 10 chapters", first)
-        self.assertIn(f"{done} of {total} concepts", first)
+        self.assertEqual(self.lines[0], "Undergraduate Game Theory Lecture Notes")
         filled = round(20 * done / total)
-        self.assertIn("█" * filled + "░" * (20 - filled), first)
-        self.assertEqual(first.count("█") + first.count("░"), 20)
+        self.assertEqual(
+            self.lines[1],
+            "█" * filled + "░" * (20 - filled) + f" 0 of 10 chapters · {done} of {total} concepts",
+        )
+        self.assertEqual(self.lines[2], "")
+
+    def test_map_header_truncates_long_title_to_width(self):
+        title = "T" * 100
+        first = lbr.render_map(book_from([("One", [(" ", "a")])], title=title)).splitlines()[0]
+        self.assertEqual(first, "T" * 79 + "…")
+        self.assertEqual(len(first), 80)
 
     def test_map_header_counts_done_chapters(self):
         book = book_from(
             [("One", [("x", "a"), ("x", "b")]), ("Two", [("x", "c"), (" ", "d")])]
         )
-        first = lbr.render_map(book).splitlines()[0]
+        first = lbr.render_map(book).splitlines()[1]
         self.assertIn("1 of 2 chapters", first)
         self.assertIn("3 of 4 concepts", first)
         self.assertIn("█" * 15 + "░" * 5, first)
@@ -166,8 +172,8 @@ class MapTest(unittest.TestCase):
         self.assertIn("Book complete", out.splitlines()[-1])
         self.assertNotIn("Next session", out)
         self.assertNotIn("you are here", out)
-        self.assertIn("2 of 2 chapters", out.splitlines()[0])
-        self.assertIn("█" * 20, out.splitlines()[0])
+        self.assertIn("2 of 2 chapters", out.splitlines()[1])
+        self.assertIn("█" * 20, out.splitlines()[1])
 
     def test_book_complete_with_shaky(self):
         book = book_from([("One", [("x", "a"), ("!", "b")])])
@@ -190,7 +196,7 @@ class MapTest(unittest.TestCase):
         self.assertIn("…", out)
         self.assertIn("← you are here", out)
         self.assertIn("shaky", out)
-        self.assertIn("1 of 4 concepts", out.splitlines()[0])
+        self.assertIn("1 of 4 concepts", out.splitlines()[1])
         for line in lbr.render_map(self.book).splitlines():
             self.assertLessEqual(len(line), 80, line)
 

@@ -324,8 +324,7 @@ def render_map(book, width=80):
     filled = round(BAR_CELLS * done / total) if total else 0
     bar = "█" * filled + "░" * (BAR_CELLS - filled)
     stats = f"{chapters_done} of {len(book.chapters)} chapters · {done} of {total} concepts"
-    title = fit(book.title, width - len(bar) - len(stats) - 3)
-    lines = [f"{title}  {bar} {stats}" if title else f"{bar} {stats}", ""]
+    lines = [fit(book.title, width), f"{bar} {stats}", ""]
 
     number_width = max(len(ch.number) for ch in book.chapters)
     prefix_width = len(f" ✓ Ch {'':<{number_width}}  ")
