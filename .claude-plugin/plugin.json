@@ -4,5 +4,7 @@
   "description": "Turn a book or lecture notes into a chapter-by-chapter course that teaches by making you reason: a problem first, then the explanation, then you teach it back.",
   "author": { "name": "emirmuratsezer" },
   "license": "MIT",
+  "repository": "https://github.com/remicaesar/learn-by-reasoning",
+  "homepage": "https://github.com/remicaesar/learn-by-reasoning",
   "keywords": ["learning", "reading", "teaching", "study"]
 }

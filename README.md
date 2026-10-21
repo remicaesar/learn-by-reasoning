@@ -20,7 +20,7 @@ supported yet.
 ## How to use
 
 ```text
-/plugin marketplace add ~/code/learn-by-reasoning
+/plugin marketplace add remicaesar/learn-by-reasoning
 /plugin install learn-by-reasoning@learn-by-reasoning
 # restart Claude Code
 /learn-by-reasoning:start "<path to a PDF>"
@@ -37,6 +37,12 @@ cd ~/learning/<book-folder> && claude
 
 Run inside a book's folder, a command acts on that book; anywhere else, it lists
 the books under `~/learning/` and asks which one.
+
+## Updating
+
+```text
+/plugin marketplace update learn-by-reasoning
+```
 
 ## What is in a book folder
 
@@ -58,3 +64,7 @@ matches the saved state.
 python3 -m unittest discover -s tests -v
 python3 scripts/lbr.py progress tests/fixtures
 ```
+
+## License
+
+MIT — see [LICENSE](LICENSE).
